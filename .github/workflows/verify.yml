@@ -1,0 +1,56 @@
+name: Verify release zip
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag that has the *-dev.zip attached (example: v0.49.1)"
+        required: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          tools: composer:v2
+          coverage: none
+          extensions: dom, json, mbstring, openssl, xml, xmlwriter, zip
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Download and unpack the dev zip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir dl work
+          gh release download "${{ inputs.tag }}" --repo "${{ github.repository }}" --pattern '*-dev.zip' --dir dl
+          sha256sum dl/*-dev.zip
+          unzip -q dl/*-dev.zip -d work
+          ls work
+
+      - name: Run all checks and keep raw logs
+        working-directory: work/automatic-seo-pro
+        run: |
+          mkdir -p logs
+          php -v | tee logs/php-version-ci.log
+          php -m | tee logs/php-modules-ci.log
+          find . -path './vendor' -prune -o -name '*.php' -print0 | xargs -0 -n1 php -l > logs/php-lint-ci.log 2>&1 || true
+          vendor/bin/phpunit --configuration phpunit.xml > logs/phpunit-ci.log 2>&1 || true
+          vendor/bin/phpcs --standard=phpcs.xml > logs/phpcs-ci.log 2>&1 || true
+          VERIFY_CAPTURE_LOGS=1 bash tools/verify.sh > logs/verify-ci.log 2>&1 || true
+          echo "--- phpunit summary"; tail -n 6 logs/phpunit-ci.log
+          echo "--- phpcs summary"; tail -n 6 logs/phpcs-ci.log
+          echo "--- lint failures"; grep -v "No syntax errors" logs/php-lint-ci.log | head -20 || true
+          echo "--- verify summary"; tail -n 25 logs/verify-ci.log
+
+      - name: Upload logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-logs
+          path: work/automatic-seo-pro/logs
